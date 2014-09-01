@@ -4,6 +4,16 @@
             [datomic.api :as d]))
 
 
+(defn eval-where-clause
+  "Evaluate a single where clause"
+  [datoms-fn is-ref-attr? has-index? ctx clause]
+  (let [[index components filter-fn] (compute-index-traversal is-ref-attr? has-index? ctx clause)
+        ds (seq (apply datoms-fn index components))]
+    (if filter-fn
+      (filter filter-fn ds)
+      ds)))
+
+
 (deftest where-clause-eavt
   (let [test-datom-a {:e 1000 :a 10 :v "a" :tx 101 :added true}
         test-datom-b {:e 1000 :a 11 :v "b" :tx 101 :added true}

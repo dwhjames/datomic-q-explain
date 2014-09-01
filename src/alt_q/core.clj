@@ -4,24 +4,8 @@
 (set! *warn-on-reflection* true)
 
 
-(defn is-ref-attr?
-  [db attr]
-  (-> db
-      (d/entity attr)
-      :db/valueType
-      (= :db.type/ref)))
-
-
-(defn has-index?
-  [db attr]
-  (let [e (d/entity db attr)]
-    (or (:db/index e)
-        (:db/unique e))))
-
-
-(defn eval-where-clause
-  "Evaluate a single where clause"
-  [datoms-fn is-ref-attr? has-index? ctx clause]
+(defn compute-index-traversal
+  [is-ref-attr? has-index? ctx clause]
   (let [;; extract the symbols from the clause
         [e-sym a-sym v-sym t-sym] clause
         ;; look up symbols in context
@@ -37,41 +21,36 @@
          ;; ?e ?a and ?v are bound
          (if t
            ;; only ?e ?a ?v and ?t are bound
-           (-> (datoms-fn :eavt e a v t) seq)
+           [:eavt [e a v t] nil]
            ;; only ?e ?a and ?v are bound
-           (-> (datoms-fn :eavt e a v) seq))
+           [:eavt [e a v] nil])
          ;; ?e and ?a are bound, not ?v
          (if t
            ;; ?e ?a and ?t are bound, not ?v
-           (->> (datoms-fn :eavt e a)
-                seq
-                (filter #(= t (:tx %))))
+           [:eavt [e a] #(= t (:tx %))]
            ;; only ?e and ?a are bound
-           (-> (datoms-fn :eavt e a) seq)))
+           [:eavt [e a] nil]))
        ;; ?e is bound and ?a is not bound
        (if v
          ;; ?e and ?v are bound, not ?a
          (if t
            ;; only ?e ?v and ?t are bound
-           (->> (datoms-fn :eavt e)
-                seq
-                ;; filter for ?v and ?t
-                (filter #(and (= v (:v %))
-                              (= t (:tx %)))))
+           [:eavt [e]
+            ;; filter for ?v and ?t
+            #(and (= v (:v %))
+                  (= t (:tx %)))]
            ;; only ?e and ?v are bound
-           (->> (datoms-fn :eavt e)
-                seq
-                ;; filter for ?v
-                (filter #(= v (:v %)))))
+           [:eavt [e]
+            ;; filter for ?v
+            #(= v (:v %))])
          ;; ?e is bound, not ?a or ?v
          (if t
            ;; only ?e and ?t are bound
-           (->> (datoms-fn :eavt e)
-                seq
-                ;; filter for ?t
-                (filter #(= t (:tx %))))
+           [:eavt [e]
+            ;; filter for ?t
+            #(= t (:tx %))]
            ;; only ?e is bound
-           (-> (datoms-fn :eavt e) seq))))
+           [:eavt [e] nil])))
      ;; ?e is not bound
      (if a
        ;; ?a is bound, not ?e
@@ -81,42 +60,37 @@
           (is-ref-attr? a) ;; if attr is ref type
           (if t
             ;; only ?a ?v and ?t are bound
-            (->> (datoms-fn :vaet v a)
-                 seq
-                 ;; filter for ?t
-                 (filter #(= t (:tx %))))
+            [:vaet [v a]
+             ;; filter for ?t
+             #(= t (:tx %))]
             ;; only ?a and ?v are bound
-            (-> (datoms-fn :vaet v a) seq))
+            [:vaet [v a] nil])
           (has-index? a) ;; if attr has index
           (if t
             ;; only ?a ?v and ?t are bound
-            (->> (datoms-fn :avet a v)
-                 seq
-                 ;; filter for t
-                 (filter #(= t (:tx %))))
+            [:avet [a v]
+             ;; filter for t
+             #(= t (:tx %))]
             ;; only ?a and ?v are bound
-            (-> (datoms-fn :avet a v) seq))
+            [:avet [a v] nil])
           :else
           (if t
             ;; only ?a ?v and ?t are bound
-            (->> (datoms-fn :aevt a)
-                 seq
-                 ;; filter for ?v and ?t
-                 (filter #(and (= v (:v %))
-                               (= t (:tx %)))))
+            [:aevt [a]
+             ;; filter for ?v and ?t
+             #(and (= v (:v %))
+                   (= t (:tx %)))]
             ;; only ?a and ?v are bound
-            (->> (datoms-fn :aevt a)
-                 seq
-                 ;; filter for ?v
-                 (filter #(= v (:v %))))))
+            [:aevt [a]
+             ;; filter for ?v
+             #(= v (:v %))]))
          ;; ?a is bound, not ?e or ?v
          (if t
            ;; only ?a and ?t are bound
-           (->> (datoms-fn :aevt a)
-                seq
-                (filter #(= t (:tx %))))
+           [:aevt [a]
+            #(= t (:tx %))]
            ;; only ?a is bound
-           (-> (datoms-fn :aevt a) seq)))
+           [:aevt [a] nil]))
        ;; neither ?e nor ?a are bound
        (throw (IllegalArgumentException. "not enough bound variables"))))))
 
@@ -191,31 +165,53 @@
       [(get-db '$) clause])))
 
 
+(defn is-ref-attr?
+  [db attr]
+  (-> db
+      (d/entity attr)
+      :db/valueType
+      (= :db.type/ref)))
+
+
+(defn has-index?
+  [db attr]
+  (let [e (d/entity db attr)]
+    (or (:db/index e)
+        (:db/unique e))))
+
+
 (defn- one-step
   [ctx clause]
-  (let [[db clause1] (lookup-db-for-clause ctx clause)]
-    (->>
-     (eval-where-clause (partial d/datoms db)
-                        (partial is-ref-attr? db)
-                        (partial has-index? db)
-                        ctx
-                        clause1)
-     (bind-datoms ctx
-                  clause1))))
+  (let [[db clause1]
+        (lookup-db-for-clause ctx clause)
+        [index components filter-fn]
+        (compute-index-traversal (partial is-ref-attr? db)
+                                 (partial has-index? db)
+                                 ctx
+                                 clause1)
+        datoms (seq (apply d/datoms db index components))
+        ctxs (bind-datoms ctx
+                          clause1
+                          (if filter-fn
+                            (filter filter-fn datoms)
+                            datoms))]
+    [index ctxs]))
 
 
 (defn count-query
   [ctx clauses]
-  (let [cnts (-> clauses count (repeat 0) vec atom)
+  (let [cnts (-> clauses count (repeat {}) vec atom)
         [ctx1 clauses1] (abstract-clauses ctx clauses)        
         go (fn rec [ctx clauses i]
              (when (seq clauses)
-               (let [cnt (atom 0)]
-                 (doseq [ctx1 (one-step ctx (first clauses))]
+               (let [cnt (atom 0)
+                     [index ctxs] (one-step ctx (first clauses))]
+                 (doseq [ctx1 ctxs]
                    (swap! cnt inc)
                    (rec ctx1 (rest clauses) (inc i)))
                  (swap! cnts
-                        #(update-in % [i] (partial + @cnt))))))]
+                        #(update-in % [i index]
+                                    (fnil (partial + @cnt) 0))))))]
     (go ctx1 clauses1 0)
     (map vector clauses @cnts)))
 
