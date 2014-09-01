@@ -119,22 +119,31 @@
         (list ctx)))))
 
 
+(defn is-expression-clause?
+  [clause]
+  (-> clause first list?))
+
+
 (defn abstract-clause
   [ctx clause]
-  (loop [ctx ctx
-         clause clause
-         acc []]
-    (if-let [x (first clause)]
-      (if (and (symbol? x)
-               (-> x name first #{\? \_ \$}))
-        (recur ctx
-               (rest clause)
-               (conj acc x))
-        (let [s (gensym "?")]
-          (recur (assoc ctx s x)
-                 (rest clause)
-                 (conj acc s))))
-      [ctx acc])))
+  (cond
+   (is-expression-clause? clause)
+   [ctx clause]
+   :else
+   (loop [ctx ctx
+          clause clause
+          acc []]
+     (if-let [x (first clause)]
+       (if (and (symbol? x)
+                (-> x name first #{\? \_ \$}))
+         (recur ctx
+                (rest clause)
+                (conj acc x))
+         (let [s (gensym "?")]
+           (recur (assoc ctx s x)
+                  (rest clause)
+                  (conj acc s))))
+       [ctx acc]))))
 
 
 (defn abstract-clauses
@@ -180,22 +189,41 @@
         (:db/unique e))))
 
 
-(defn- one-step
+(defn eval-expression-clause
   [ctx clause]
-  (let [[db clause1]
-        (lookup-db-for-clause ctx clause)
-        [index components filter-fn]
-        (compute-index-traversal (partial is-ref-attr? db)
-                                 (partial has-index? db)
-                                 ctx
-                                 clause1)
-        datoms (seq (apply d/datoms db index components))
-        ctxs (bind-datoms ctx
-                          clause1
-                          (if filter-fn
-                            (filter filter-fn datoms)
-                            datoms))]
-    [index ctxs]))
+  (let [expr (first clause)
+        expr1 (map #(get ctx % %) expr)]
+    (case (count clause)
+      1 (when (eval expr1)
+          (list ctx))
+      2 (let [out (second clause)]
+          (if (symbol? out)
+            (list (assoc ctx out (eval expr1)))
+            (throw (UnsupportedOperationException. (str "clause "
+                                                        clause
+                                                        " has a non-scalar binding."))))))))
+
+
+(defn one-step
+  [ctx clause]
+  (cond
+   (is-expression-clause? clause)
+   [:expr (eval-expression-clause ctx clause)]
+   :else
+   (let [[db clause1]
+         (lookup-db-for-clause ctx clause)
+         [index components filter-fn]
+         (compute-index-traversal (partial is-ref-attr? db)
+                                  (partial has-index? db)
+                                  ctx
+                                  clause1)
+         datoms (seq (apply d/datoms db index components))
+         ctxs (bind-datoms ctx
+                           clause1
+                           (if filter-fn
+                             (filter filter-fn datoms)
+                             datoms))]
+     [index ctxs])))
 
 
 (defn count-query
