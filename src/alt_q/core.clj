@@ -5,6 +5,26 @@
 
 
 (defn compute-index-traversal
+  "Determine which index to use and how to traverse it,
+   given a query `:where` clause `clause` and
+   an evaluation context `ctx`.
+
+   The functions `is-ref-attr?` and `has-index?` are
+   invoked to determine the `:vaet` and `:avet` indexes
+   can be used, respectively.
+
+   This function returns a triple, of the index keyword
+   (one of `:eavt`, `:aevt`, `:avet`, or `:vaet`), the
+   fixed components to apply to the index lookup, and
+   an optional predicate that if non-nil should be used
+   to filter the datoms that a returned from an index
+   traversal.
+
+   Example:
+       (let [[index components filter-fn] (compute-index-traversal ...)
+             ds (seq (apply d/datoms index components))]
+         (if filter-fn (filter filter-fn ds) ds))
+   "
   [is-ref-attr? has-index? ctx clause]
   (let [;; extract the symbols from the clause
         [e-sym a-sym v-sym t-sym] clause
@@ -96,6 +116,10 @@
 
 
 (defn- bind-query-vars
+  "Bind query variables to values extracted from a datom.
+
+   Evaluation context `ctx` is extended with variables `k`
+   bound to values extract by functions `f` from datom `d`."
   [ctx d f k & fks]
   (let [ret (assoc ctx k (f d))]
     (if fks
@@ -103,28 +127,44 @@
       ret)))
 
 
-;; TODO: ignoring :added for now
 (defn bind-datoms
-  ""
+  "Bind a collection datoms `ds` to the variables in a `:where`
+   clause `clause`, producing a lazy sequence of new evaluation
+   contexts extends from `ctx`.
+
+   It is assumed that `clause` is already fully abstracted, so
+   it consists only of variables and no literals. Values are
+   only extracted for unbound variables (and wildcards are skipped).
+
+   Note: the `:added` value of a datom is currently ignored.
+   The rationale is that this can't have an impact of datoms
+   consumption in a query."
   [ctx clause ds]
   (when (seq ds)
     (let [bind-args
           (->> clause
-               (map vector [:e :a :v :tx])
-               (filter #(not (or (contains? ctx (second %))
-                                 (= '_ (second %)))))
+               (map vector [:e :a :v :tx]) ;; zip with keyword accessors
+               (filter (fn [[a b]] ;; only keep pairs for unbound vars
+                         (not (or (contains? ctx b)
+                                  (= '_ b)))))
                (apply concat))]
-      (if (seq bind-args)
+      (if (seq bind-args) ;; shortcut traversal if there is nothing to bind
         (map #(apply bind-query-vars ctx % bind-args) ds)
         (list ctx)))))
 
 
 (defn is-expression-clause?
+  "A clause is an expression clause if the first
+   element is a list."
   [clause]
   (-> clause first list?))
 
 
 (defn is-rule-invocation?
+  "A clause is a rule invocation if the first element
+   is a symbolic name (not a query var or wildcard), or
+   if the second is a symblic name and the first is a
+   database variable (symbol beginning with `$`)."
   [clause]
   (let [[a b] clause]
     (and (symbol? a)
@@ -135,6 +175,10 @@
 
 
 (defn abstract-with-fresh-vars
+  "Extend the evaluation context `ctx` with new query vars
+   for elements of `coll` that are not already query var,
+   db vars, or wildcards. Return the new context and the
+   abstracted collection."
   [ctx coll]
   (loop [ctx ctx
          coll coll
@@ -153,6 +197,12 @@
 
 
 (defn abstract-clause
+  "Extend the evaluation context `ctx` by abstracting the
+   `:where` clause `clause`, returning a pair of the new
+   context and the new clause.
+
+   Expression clauses are ignored, and rule invocations
+   are handled specially to avoid abstracting the rule name."
   [ctx clause]
   (cond
    (is-expression-clause? clause)
@@ -171,6 +221,9 @@
 
 
 (defn abstract-clauses
+  "Extends the evaluation context `ctx` by abstracting the
+   `:where` clauses `clauses`, returning a pair of the new
+   context and the new clauses."
   [ctx clauses]
   (loop [ctx ctx
          clauses clauses
@@ -182,6 +235,11 @@
 
 
 (defn lookup-db-for-clause
+  "Determine the appropriate database value to use for the
+   given `clause`. If the clause's first element specifies
+   a database variable, then that database is looked up in
+   `ctx`, otherwise the default database value is used, the
+   one bound to `$`."
   [ctx clause]
   (let [first-sym (first clause)
         get-db (fn [db-sym]
@@ -199,6 +257,7 @@
 
 
 (defn is-ref-attr?
+  "Test if the given attribute `attr` has a value type of ref."
   [db attr]
   (-> db
       (d/entity attr)
@@ -207,6 +266,8 @@
 
 
 (defn has-index?
+  "Test if the given attribute `attr` has either an index
+   or a uniqueness constraint."
   [db attr]
   (let [e (d/entity db attr)]
     (or (:db/index e)
@@ -214,6 +275,14 @@
 
 
 (defn eval-expression-clause
+  "Evaluate an expression `clause` according to `ctx`.
+
+   If it is just a predicate clause, and evaluates to true,
+   then the same context is returned. Otherwise it is a
+   function clause and the context is returned with the
+   output variable bound to the result of the function.
+
+   Note: only scalar bindings are currently supported."
   [ctx clause]
   (let [expr (first clause)
         expr1 (map #(get ctx % %) expr)]
@@ -223,44 +292,93 @@
       2 (let [out (second clause)]
           (if (symbol? out)
             (list (assoc ctx out (eval expr1)))
-            (throw (UnsupportedOperationException. (str "clause "
-                                                        clause
-                                                        " has a non-scalar binding."))))))))
+            (throw (UnsupportedOperationException.
+                    (str "clause "
+                         clause
+                         " has a non-scalar binding."))))))))
 
 
 ;; assume ctx has % for the rule set
 (defn resolve-rule-invoc
+  "Resolves a rule invocation `rule-invoc` according to `ctx`.
+   This function returns a sequence of triples.
+
+   The first element of a triple is the input context,
+   the context that the rule-body should be evaluated under.
+   This includes the database, bound to `$`, the rule set,
+   bound to `%`, and any input parameters that were bound
+   at invocation.
+
+   The second element of a triple is the output context.
+   This is a mapping from parameters of the rule head that
+   where unbound at invocation, mapped to argument variables.
+   The evaluation of the rule body will bind values to the
+   parameter variables, which can then be lifted to values
+   for the argument variables in the invocation (outer)
+   context.
+
+   The third element of a triple is the rule body.
+
+   For example,
+       ctx
+         {'$ ...
+          '% '[[(my-rule ?i ?o)
+                [...]
+                [...]]]
+          '?my-in-var 10}
+       rule-invoc
+         '(my-rule ?my-in-var ?my-out-var)
+   gives
+       in-ctx
+         {'$ ...
+          '% '[[(my-rule ?i ?o)
+                [...]
+                [...]]]
+          '?i 10}
+       out-ctx
+         '{?o ?my-out-var}
+       rule-body
+         [[...] [...]]
+   "
   [ctx rule-invoc]
   (let [rules (get ctx '%) ;; lookup rules from context
         [db rule-name & rule-args]
         (if (-> rule-invoc first name first (= \$))
+          ;; if first element is db var, look it up
           (cons (get ctx
                      (first rule-invoc))
                 (rest rule-invoc))
+          ;; otherwise use the default db var
           (cons (get ctx '$)
                 rule-invoc))
         rule-defs
         (filter #(= rule-name (ffirst %)) rules)]
-    (if rule-defs
-      (for [rule-def rule-defs
-           :let [[_ & rule-params] (first rule-def)]]
+    (if rule-defs ;; check that some rule defs are actually found
+      (for [[[_ & rule-params] & rule-body] rule-defs]
        (conj
-        (reduce
+        (reduce ;; build the input and output contexts
          (fn [[in-ctx out-ctx]
              [param arg]]
            (if-let [x (get ctx arg)]
              [(assoc in-ctx param x) out-ctx]
              [in-ctx (assoc out-ctx param arg)]))
-         [{'$ db '% rules} {}]
+         [{'$ db '% rules} ;; the input context starts with a db and rules
+          {}]
          (zipmap rule-params rule-args))
-        (rest rule-def)))
+        rule-body))
       (throw (IllegalArgumentException. (str "No rule definition found for "
                                              rule-name))))))
 
 
+;; declare to enable mutual recursion
 (declare eval-rule-invoc)
 
 (defn one-step-rule
+  "Evaluate one step of a rule body, a single clause.
+   This returns a lazy sequence of extended eval contexts.
+
+   If the clause is a rule invocation, then the rule evaluation
+   recurses."
   [ctx clause]
   (cond
    (is-expression-clause? clause)
@@ -268,7 +386,7 @@
    (is-rule-invocation? clause)
    (eval-rule-invoc ctx clause)
    :else
-   (let [db (get ctx '$)
+   (let [db (get ctx '$) ;; this is the database for the entire rule eval
          [index components filter-fn]
          (compute-index-traversal (partial is-ref-attr? db)
                                   (partial has-index? db)
@@ -281,31 +399,54 @@
                     (filter filter-fn datoms)
                     datoms)))))
 
+
 (defn eval-rule-invoc
+  "Evaluate a rule invocation `rule-invoc` according to `ctx`.
+
+   This produces a lazy sequence of all extended contexts
+   produced, by evaluating all rule heads that match, potentially
+   with recursion."
   [ctx rule-invoc]
-  (mapcat
+  (mapcat ;; mapcat over all rule invocation resolutions
    (fn [[in-ctx out-ctx rule-body]]
-     (let [[in-ctx1 rule-body1] (abstract-clauses in-ctx rule-body)
+     (let [;; a fn to recursively evaluate the rule body
            go (fn rec [curr-ctx body-clauses]
-               (if (seq body-clauses)
-                 (let [ctxs (one-step-rule curr-ctx (first body-clauses))]
-                   (mapcat #(rec % (rest body-clauses))
-                           ctxs))
-                 (list curr-ctx)))
-           ctxs (go in-ctx1 rule-body1)]
-       (map
-        (fn [rule-ctx]
-          (into ctx ;; augment original ctx
-                (reduce ;; with rule-ctx according to out-ctx
-                 (fn [acc [param arg]]
-                   (assoc acc arg (get rule-ctx param)))
-                 {}
-                 out-ctx)))
-        ctxs)))
+                (if (seq body-clauses)
+                  ;; if there more clauses
+                  (->> (first body-clauses)
+                       ;; evalute the first to a sequence of contexts
+                       (one-step-rule curr-ctx)
+                       ;; and recursively eval the rest of the body
+                       ;; for each of those contexts
+                       (mapcat #(rec % (rest body-clauses))))
+                  ;; else return the context as is
+                  (list curr-ctx)))]
+       (->>
+        ;; prepare the rule body by abstract all the clauses
+        (abstract-clauses in-ctx rule-body)
+        ;; recursively eval
+        (apply go)
+        ;; extract the output variables into the original context
+        (map
+         (fn [rule-ctx]
+           (into ctx  ;; augment original ctx
+                 (reduce ;; with rule-ctx according to out-ctx
+                  (fn [acc [param arg]]
+                    (assoc acc arg (get rule-ctx param)))
+                  {}
+                  out-ctx)))))))
    (resolve-rule-invoc ctx rule-invoc)))
 
 
 (defn one-step
+  "Evaluate one step of a query `:where` `clause`
+   according to `ctx`.
+
+   Returns a pair of the raw index accessed as a
+   sequence of extended evaluation contexts. If the
+   clause is an expression, then `:expr` is returned
+   instead of a raw index keyword, and similarly,
+   `:rule` for rule invocations."
   [ctx clause]
   (cond
    (is-expression-clause? clause)
@@ -332,18 +473,17 @@
 (defn count-query
   [ctx clauses]
   (let [cnts (-> clauses count (repeat {}) vec atom)
-        [ctx1 clauses1] (abstract-clauses ctx clauses)        
-        go (fn rec [ctx clauses i]
+        go (fn rec [i ctx clauses]
              (when (seq clauses)
                (let [cnt (atom 0)
                      [index ctxs] (one-step ctx (first clauses))]
                  (doseq [ctx1 ctxs]
                    (swap! cnt inc)
-                   (rec ctx1 (rest clauses) (inc i)))
+                   (rec (inc i) ctx1 (rest clauses)))
                  (swap! cnts
                         #(update-in % [i index]
                                     (fnil (partial + @cnt) 0))))))]
-    (go ctx1 clauses1 0)
+    (apply go 0 (abstract-clauses ctx clauses))
     (map vector clauses @cnts)))
 
 
