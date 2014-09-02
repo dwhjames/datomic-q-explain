@@ -124,26 +124,50 @@
   (-> clause first list?))
 
 
+(defn is-rule-invocation?
+  [clause]
+  (let [[a b] clause]
+    (and (symbol? a)
+         (or (and (-> a name first (= \$))
+                  (symbol? b)
+                  (-> b name first #{\? \_} not))
+             (-> a name first #{\? \_} not)))))
+
+
+(defn abstract-with-fresh-vars
+  [ctx coll]
+  (loop [ctx ctx
+         coll coll
+         acc []]
+    (if-let [x (first coll)]
+      (if (and (symbol? x)
+               (-> x name first #{\? \_ \$}))
+        (recur ctx
+               (rest coll)
+               (conj acc x))
+        (let [s (gensym "?")]
+          (recur (assoc ctx s x)
+                 (rest coll)
+                 (conj acc s))))
+      [ctx acc])))
+
+
 (defn abstract-clause
   [ctx clause]
   (cond
    (is-expression-clause? clause)
    [ctx clause]
+   (is-rule-invocation? clause)
+   (if (-> clause first name first (= \$))
+     (let [[db-var rule-name & args] clause
+           [ctx1 abstract-args] (abstract-with-fresh-vars ctx args)]
+       [ctx1
+        (cons db-var (cons rule-name abstract-args))])
+     (let [[rule-name & args] clause
+           [ctx1 abstract-args] (abstract-with-fresh-vars ctx args)]
+       [ctx1 (cons rule-name abstract-args)]))
    :else
-   (loop [ctx ctx
-          clause clause
-          acc []]
-     (if-let [x (first clause)]
-       (if (and (symbol? x)
-                (-> x name first #{\? \_ \$}))
-         (recur ctx
-                (rest clause)
-                (conj acc x))
-         (let [s (gensym "?")]
-           (recur (assoc ctx s x)
-                  (rest clause)
-                  (conj acc s))))
-       [ctx acc]))))
+   (abstract-with-fresh-vars ctx clause)))
 
 
 (defn abstract-clauses
@@ -204,11 +228,90 @@
                                                         " has a non-scalar binding."))))))))
 
 
+;; assume ctx has % for the rule set
+(defn resolve-rule-invoc
+  [ctx rule-invoc]
+  (let [rules (get ctx '%) ;; lookup rules from context
+        [db rule-name & rule-args]
+        (if (-> rule-invoc first name first (= \$))
+          (cons (get ctx
+                     (first rule-invoc))
+                (rest rule-invoc))
+          (cons (get ctx '$)
+                rule-invoc))
+        rule-defs
+        (filter #(= rule-name (ffirst %)) rules)]
+    (if rule-defs
+      (for [rule-def rule-defs
+           :let [[_ & rule-params] (first rule-def)]]
+       (conj
+        (reduce
+         (fn [[in-ctx out-ctx]
+             [param arg]]
+           (if-let [x (get ctx arg)]
+             [(assoc in-ctx param x) out-ctx]
+             [in-ctx (assoc out-ctx param arg)]))
+         [{'$ db '% rules} {}]
+         (zipmap rule-params rule-args))
+        (rest rule-def)))
+      (throw (IllegalArgumentException. (str "No rule definition found for "
+                                             rule-name))))))
+
+
+(declare eval-rule-invoc)
+
+(defn one-step-rule
+  [ctx clause]
+  (cond
+   (is-expression-clause? clause)
+   (eval-expression-clause ctx clause)
+   (is-rule-invocation? clause)
+   (eval-rule-invoc ctx clause)
+   :else
+   (let [db (get ctx '$)
+         [index components filter-fn]
+         (compute-index-traversal (partial is-ref-attr? db)
+                                  (partial has-index? db)
+                                  ctx
+                                  clause)
+         datoms (seq (apply d/datoms db index components))]
+     (bind-datoms ctx
+                  clause
+                  (if filter-fn
+                    (filter filter-fn datoms)
+                    datoms)))))
+
+(defn eval-rule-invoc
+  [ctx rule-invoc]
+  (mapcat
+   (fn [[in-ctx out-ctx rule-body]]
+     (let [[in-ctx1 rule-body1] (abstract-clauses in-ctx rule-body)
+           go (fn rec [curr-ctx body-clauses]
+               (if (seq body-clauses)
+                 (let [ctxs (one-step-rule curr-ctx (first body-clauses))]
+                   (mapcat #(rec % (rest body-clauses))
+                           ctxs))
+                 (list curr-ctx)))
+           ctxs (go in-ctx1 rule-body1)]
+       (map
+        (fn [rule-ctx]
+          (into ctx ;; augment original ctx
+                (reduce ;; with rule-ctx according to out-ctx
+                 (fn [acc [param arg]]
+                   (assoc acc arg (get rule-ctx param)))
+                 {}
+                 out-ctx)))
+        ctxs)))
+   (resolve-rule-invoc ctx rule-invoc)))
+
+
 (defn one-step
   [ctx clause]
   (cond
    (is-expression-clause? clause)
    [:expr (eval-expression-clause ctx clause)]
+   (is-rule-invocation? clause)
+   [:rule (eval-rule-invoc ctx clause)]
    :else
    (let [[db clause1]
          (lookup-db-for-clause ctx clause)
