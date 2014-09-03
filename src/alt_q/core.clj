@@ -356,9 +356,8 @@
     (if rule-defs ;; check that some rule defs are actually found
       (for [[[_ & rule-params] & rule-body] rule-defs]
        (conj
-        (reduce ;; build the input and output contexts
-         (fn [[in-ctx out-ctx]
-             [param arg]]
+        (reduce-kv ;; build the input and output contexts
+         (fn [[in-ctx out-ctx] param arg]
            (if-let [x (get ctx arg)]
              [(assoc in-ctx param x) out-ctx]
              [in-ctx (assoc out-ctx param arg)]))
@@ -460,8 +459,8 @@
         (map
          (fn [rule-ctx]
            (into ctx  ;; augment original ctx
-                 (reduce ;; with rule-ctx according to out-ctx
-                  (fn [acc [param arg]]
+                 (reduce-kv ;; with rule-ctx according to out-ctx
+                  (fn [acc param arg]
                     (assoc acc arg (get rule-ctx param)))
                   {}
                   out-ctx)))))))
