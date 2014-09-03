@@ -492,15 +492,25 @@
      [index ctxs])))
 
 
-(defn count-query
+(defn count-datom-usage
+  "Count the number of datoms accessed while evaluating
+   `clauses` according to `ctx`.
+
+   This returns a sequence of the clauses paired with the
+   index that was used for evaluating the clause as well
+   as the number of datoms retrieved from that index."
   [ctx clauses]
   (let [cnts (-> clauses count (repeat {}) vec atom)
         go (fn rec [i ctx clauses]
              (when (seq clauses)
-               (let [cnt (atom 0)
+               (let [cnt (atom 0) ;; a counter for the clause eval
                      [index ctxs] (one-step ctx cnt (first clauses))]
+                 ;; force the eval of the rest using each of the
+                 ;; eval ctxs produced from the first
                  (doseq [ctx1 ctxs]
                    (rec (inc i) ctx1 (rest clauses)))
+                 ;; all datoms needed for the first will now have been
+                 ;; consumed, so `cnt` holds the total
                  (swap! cnts
                         #(update-in % [i index]
                                     (fnil (partial + @cnt) 0))))))]
@@ -509,6 +519,14 @@
 
 
 (defn extract-query
+  "Given a regular Datomic query, extract the `:in` and
+   `:where` sections.
+
+   Returns a pair of the `:in` params and the
+   `:where` clauses.
+
+   Note that this function will accept the query in
+   either vector or map form."
   [query]
   (cond
    (vector? query)
@@ -527,12 +545,19 @@
 
 
 (defn explain-query
+  "Explain a Datomic query by showing the indexes that
+   were accessed and the number of datoms consumed.
+
+   This function will receive the same arguments as
+   Datomic's `q` function, but will return the query
+   explanation rather than the result set."
   [query & args]
   (let [[in-vars clauses] (extract-query query)]
     (when (not= (count args) (count in-vars))
+      ;; complain if param and arg arity don't align
       (throw (IllegalArgumentException. (str "query expected "
                                              (count in-vars)
                                              " arguments, but given "
                                              (count args)))))
-    (count-query (zipmap in-vars args)
-                 clauses)))
+    (count-datom-usage (zipmap in-vars args)
+                       clauses)))
