@@ -370,6 +370,22 @@
                                              rule-name))))))
 
 
+(defn trace-iterator
+  "Trace an iterator by counting the number
+   of elements consumed. `cnt` should be an atom
+   containing an integer counter."
+  [^Iterable iterable cnt]
+  (let [iter (.iterator iterable)]
+    (reify java.util.Iterator
+      (hasNext [_]
+        (.hasNext iter))
+      (next [_]
+        (swap! cnt inc)
+        (.next iter))
+      (remove [_]
+        (throw (UnsupportedOperationException.))))))
+
+
 ;; declare to enable mutual recursion
 (declare eval-rule-invoc)
 
@@ -379,12 +395,12 @@
 
    If the clause is a rule invocation, then the rule evaluation
    recurses."
-  [ctx clause]
+  [ctx cnt clause]
   (cond
    (is-expression-clause? clause)
    (eval-expression-clause ctx clause)
    (is-rule-invocation? clause)
-   (eval-rule-invoc ctx clause)
+   (eval-rule-invoc ctx cnt clause)
    :else
    (let [db (get ctx '$) ;; this is the database for the entire rule eval
          [index components filter-fn]
@@ -392,7 +408,10 @@
                                   (partial has-index? db)
                                   ctx
                                   clause)
-         datoms (seq (apply d/datoms db index components))]
+         datoms (->
+                 (apply d/datoms db index components)
+                 (trace-iterator cnt)
+                 iterator-seq)]
      (bind-datoms ctx
                   clause
                   (if filter-fn
@@ -406,7 +425,7 @@
    This produces a lazy sequence of all extended contexts
    produced, by evaluating all rule heads that match, potentially
    with recursion."
-  [ctx rule-invoc]
+  [ctx cnt rule-invoc]
   (mapcat ;; mapcat over all rule invocation resolutions
    (fn [[in-ctx out-ctx rule-body]]
      (let [;; a fn to recursively evaluate the rule body
@@ -415,7 +434,7 @@
                   ;; if there more clauses
                   (->> (first body-clauses)
                        ;; evalute the first to a sequence of contexts
-                       (one-step-rule curr-ctx)
+                       (one-step-rule curr-ctx cnt)
                        ;; and recursively eval the rest of the body
                        ;; for each of those contexts
                        (mapcat #(rec % (rest body-clauses))))
@@ -447,12 +466,12 @@
    clause is an expression, then `:expr` is returned
    instead of a raw index keyword, and similarly,
    `:rule` for rule invocations."
-  [ctx clause]
+  [ctx cnt clause]
   (cond
    (is-expression-clause? clause)
    [:expr (eval-expression-clause ctx clause)]
    (is-rule-invocation? clause)
-   [:rule (eval-rule-invoc ctx clause)]
+   [:rule (eval-rule-invoc ctx cnt clause)]
    :else
    (let [[db clause1]
          (lookup-db-for-clause ctx clause)
@@ -461,7 +480,10 @@
                                   (partial has-index? db)
                                   ctx
                                   clause1)
-         datoms (seq (apply d/datoms db index components))
+         datoms (->
+                 (apply d/datoms db index components)
+                 (trace-iterator cnt)
+                 iterator-seq)
          ctxs (bind-datoms ctx
                            clause1
                            (if filter-fn
@@ -476,9 +498,8 @@
         go (fn rec [i ctx clauses]
              (when (seq clauses)
                (let [cnt (atom 0)
-                     [index ctxs] (one-step ctx (first clauses))]
+                     [index ctxs] (one-step ctx cnt (first clauses))]
                  (doseq [ctx1 ctxs]
-                   (swap! cnt inc)
                    (rec (inc i) ctx1 (rest clauses)))
                  (swap! cnts
                         #(update-in % [i index]
