@@ -371,16 +371,17 @@
 
 
 (defn trace-iterator
-  "Trace an iterator by counting the number
-   of elements consumed. `cnt` should be an atom
-   containing an integer counter."
-  [^Iterable iterable cnt]
+  "Trace an iterator: `cnt-fn!` should be
+   a 0-arity function that will be invoked
+   once for each next on the underlying
+   iterator."
+  [^Iterable iterable cnt-fn!]
   (let [iter (.iterator iterable)]
     (reify java.util.Iterator
       (hasNext [_]
         (.hasNext iter))
       (next [_]
-        (swap! cnt inc)
+        (cnt-fn!)
         (.next iter))
       (remove [_]
         (throw (UnsupportedOperationException.))))))
@@ -389,28 +390,38 @@
 ;; declare to enable mutual recursion
 (declare eval-rule-invoc)
 
-(defn one-step-rule
-  "Evaluate one step of a rule body, a single clause.
-   This returns a lazy sequence of extended eval contexts.
+(defn eval-one-clause
+  "Evaluate a single `clause` according to `ctx`.
+
+   Returns a lazy sequence of extended eval contexts.
+   The counter map `cnt-map` is used to trace the datoms
+   that are consumed (and which index they were consumed
+   from). Only when the lazy sequence is forced will
+   the counter map hold the true total.
 
    If the clause is a rule invocation, then the rule evaluation
    recurses."
-  [ctx cnt clause]
+  [ctx cnt-map clause]
   (cond
    (is-expression-clause? clause)
    (eval-expression-clause ctx clause)
    (is-rule-invocation? clause)
-   (eval-rule-invoc ctx cnt clause)
+   (eval-rule-invoc ctx cnt-map clause)
    :else
-   (let [db (get ctx '$) ;; this is the database for the entire rule eval
+   (let [[db clause1]
+         (lookup-db-for-clause ctx clause)
          [index components filter-fn]
          (compute-index-traversal (partial is-ref-attr? db)
                                   (partial has-index? db)
                                   ctx
-                                  clause)
+                                  clause1)
+         cnt-fn! (fn []
+                   (swap! cnt-map
+                          #(update-in % [index]
+                                      (fnil inc 0))))
          datoms (->
                  (apply d/datoms db index components)
-                 (trace-iterator cnt)
+                 (trace-iterator cnt-fn!)
                  iterator-seq)]
      (bind-datoms ctx
                   clause
@@ -425,7 +436,7 @@
    This produces a lazy sequence of all extended contexts
    produced, by evaluating all rule heads that match, potentially
    with recursion."
-  [ctx cnt rule-invoc]
+  [ctx cnt-map rule-invoc]
   (mapcat ;; mapcat over all rule invocation resolutions
    (fn [[in-ctx out-ctx rule-body]]
      (let [;; a fn to recursively evaluate the rule body
@@ -434,7 +445,7 @@
                   ;; if there more clauses
                   (->> (first body-clauses)
                        ;; evalute the first to a sequence of contexts
-                       (one-step-rule curr-ctx cnt)
+                       (eval-one-clause curr-ctx cnt-map)
                        ;; and recursively eval the rest of the body
                        ;; for each of those contexts
                        (mapcat #(rec % (rest body-clauses))))
@@ -457,53 +468,19 @@
    (resolve-rule-invoc ctx rule-invoc)))
 
 
-(defn one-step
-  "Evaluate one step of a query `:where` `clause`
-   according to `ctx`.
-
-   Returns a pair of the raw index accessed as a
-   sequence of extended evaluation contexts. If the
-   clause is an expression, then `:expr` is returned
-   instead of a raw index keyword, and similarly,
-   `:rule` for rule invocations."
-  [ctx cnt clause]
-  (cond
-   (is-expression-clause? clause)
-   [:expr (eval-expression-clause ctx clause)]
-   (is-rule-invocation? clause)
-   [:rule (eval-rule-invoc ctx cnt clause)]
-   :else
-   (let [[db clause1]
-         (lookup-db-for-clause ctx clause)
-         [index components filter-fn]
-         (compute-index-traversal (partial is-ref-attr? db)
-                                  (partial has-index? db)
-                                  ctx
-                                  clause1)
-         datoms (->
-                 (apply d/datoms db index components)
-                 (trace-iterator cnt)
-                 iterator-seq)
-         ctxs (bind-datoms ctx
-                           clause1
-                           (if filter-fn
-                             (filter filter-fn datoms)
-                             datoms))]
-     [index ctxs])))
-
-
 (defn count-query
   [ctx clauses]
   (let [cnts (-> clauses count (repeat {}) vec atom)
         go (fn rec [i ctx clauses]
              (when (seq clauses)
-               (let [cnt (atom 0)
-                     [index ctxs] (one-step ctx cnt (first clauses))]
-                 (doseq [ctx1 ctxs]
+               (let [cnt-map (atom {})]
+                 (doseq [ctx1 (eval-one-clause ctx cnt-map (first clauses))]
                    (rec (inc i) ctx1 (rest clauses)))
                  (swap! cnts
-                        #(update-in % [i index]
-                                    (fnil (partial + @cnt) 0))))))]
+                        #(assoc % i
+                               (merge-with +
+                                           @cnt-map
+                                           (nth % i)))))))]
     (apply go 0 (abstract-clauses ctx clauses))
     (map vector clauses @cnts)))
 
