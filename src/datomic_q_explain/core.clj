@@ -1,4 +1,4 @@
-(ns alt-q.core
+(ns datomic-q-explain.core
   (:require [datomic.api :as d]))
 
 (set! *warn-on-reflection* true)
@@ -520,7 +520,7 @@
     (:where query)]))
 
 
-(defn explain-query
+(defn q-explain
   "Explain a Datomic query by showing the indexes that
    were accessed and the number of datoms consumed.
 

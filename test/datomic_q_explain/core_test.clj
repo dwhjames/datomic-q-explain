@@ -1,6 +1,6 @@
-(ns alt-q.core-test
+(ns datomic-q-explain.core-test
   (:require [clojure.test :refer :all]
-            [alt-q.core :refer :all]
+            [datomic-q-explain.core :refer :all]
             [datomic.api :as d]))
 
 

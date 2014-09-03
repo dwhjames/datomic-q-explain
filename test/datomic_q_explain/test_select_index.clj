@@ -1,6 +1,6 @@
-(ns alt-q.test-select-index
+(ns datomic-q-explain.test-select-index
   (:require [clojure.test :refer :all]
-            [alt-q.core :refer :all]
+            [datomic-q-explain.core :refer :all]
             [datomic.api :as d]))
 
 
