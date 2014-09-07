@@ -487,12 +487,12 @@
 
 (defn count-datom-usage
   "Count the number of datoms accessed while evaluating
-   `clauses` according to `ctx`.
+   `clauses` according to evaluation contexts `ctxs`.
 
    This returns a sequence of the clauses paired with the
    index that was used for evaluating the clause as well
    as the number of datoms retrieved from that index."
-  [ctx clauses]
+  [ctxs clauses]
   (let [cnts (-> clauses count (repeat {}) vec atom)
         go (fn rec [i ctx clauses]
              (when (seq clauses)
@@ -508,7 +508,8 @@
                                (merge-with +
                                            @cnt-map
                                            (nth % i)))))))]
-    (apply go 0 (abstract-clauses ctx clauses))
+    (doseq [ctx ctxs]
+      (apply go 0 (abstract-clauses ctx clauses)))
     (map vector clauses @cnts)))
 
 
@@ -553,5 +554,11 @@
                                              (count in-vars)
                                              " arguments, but given "
                                              (count args)))))
-    (count-datom-usage (zipmap in-vars args)
-                       clauses)))
+    (let [go (fn rec [curr-ctx bindings args]
+               (if (seq bindings)
+                 (->> [(first bindings) (first args)]
+                      (apply bind-binding curr-ctx)
+                      (mapcat #(rec % (rest bindings) (rest args))))
+                 (list curr-ctx)))]
+      (count-datom-usage (go {} in-vars args)
+                         clauses))))
