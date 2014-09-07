@@ -112,7 +112,20 @@
            ;; only ?a is bound
            [:aevt [a] nil]))
        ;; neither ?e nor ?a are bound
-       (throw (IllegalArgumentException. "not enough bound variables"))))))
+       (if v
+         ;; ?v is bound, not ?e or ?a
+         ;; proceed assuming that the value bound to ?v
+         ;; is either an entity id or ident, so we will
+         ;; look in the reverse index
+         (if t
+           ;; only ?v and ?t are bound
+           [:vaet [v]
+            ;; filter for ?t
+            #(= t (:tx %))]
+           ;; only ?v is bound
+           [:vaet [v] nil])
+         ;; neither ?e ?a nor ?v are bound
+         (throw (IllegalArgumentException. "not enough bound variables")))))))
 
 
 (defn- bind-query-vars

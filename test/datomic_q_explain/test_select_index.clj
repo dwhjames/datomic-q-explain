@@ -185,6 +185,35 @@
                                    '[?e ?a ?v ?t])]
             (is (= 1
                    (count res)))
+            (is (some #{test-datom-a} res)))))
+
+      (let [test-datoms-fn
+            (fn [index v]
+              (is (= :vaet index))
+              (is (= 1003 v))
+              test-datoms)]
+
+        (testing "lookup by value"
+          (let [res
+                (eval-where-clause test-datoms-fn
+                                   is-ref-attr?
+                                   has-index?
+                                   '{?v 1003}
+                                   '[?e ?a ?v])]
+            (is (= 2
+                   (count res)))
+            (is (some #{test-datom-a} res))
+            (is (some #{test-datom-b} res))))
+
+        (testing "lookup by value, filtering by t"
+          (let [res
+                (eval-where-clause test-datoms-fn
+                                   is-ref-attr?
+                                   has-index?
+                                   '{?v 1003 ?t 101}
+                                   '[?e ?a ?v ?t])]
+            (is (= 1
+                   (count res)))
             (is (some #{test-datom-a} res))))))))
 
 (deftest where-clause-avet
