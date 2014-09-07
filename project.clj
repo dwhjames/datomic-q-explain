@@ -1,6 +1,6 @@
 (defproject datomic-q-explain "0.1.0-SNAPSHOT"
   :description "A query explainer for Datomic"
-  :url "http://example.com/FIXME"
+  :url "https://github.com/dwhjames/datomic-q-explain"
   :license {:name "Eclipse Public License"
             :url "http://www.eclipse.org/legal/epl-v10.html"}
   :dependencies [[org.clojure/clojure "1.6.0"]
