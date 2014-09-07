@@ -274,28 +274,46 @@
         (:db/unique e))))
 
 
+(defn bind-binding
+  "Bind `value` according to `binding` to produce a
+   non-empty list of eval contexts extended from `ctx`."
+  [ctx binding value]
+  (cond
+   ;; scalar binding
+   (symbol? binding)
+   (list (assoc ctx binding value))
+   (vector? binding)
+   (cond
+    (every? symbol? binding)
+    (cond
+     ;; collection binding
+     (-> binding second (= '...))
+     (map #(assoc ctx (first binding) %) value)
+     ;; tuple binding
+     :else
+     (->> (interleave binding value)
+          (apply assoc ctx)
+          list))
+    ;; relation binding
+    (-> binding first vector?)
+    (map #(apply assoc ctx
+                 (interleave (first binding) %))
+         value))))
+
+
 (defn eval-expression-clause
   "Evaluate an expression `clause` according to `ctx`.
 
    If it is just a predicate clause, and evaluates to true,
    then the same context is returned. Otherwise it is a
    function clause and the context is returned with the
-   output variable bound to the result of the function.
-
-   Note: only scalar bindings are currently supported."
+   output variable bound to the result of the function."
   [ctx clause]
-  (let [expr (first clause)
-        expr1 (map #(get ctx % %) expr)]
+  (let [expr (map #(get ctx % %) (first clause))]
     (case (count clause)
-      1 (when (eval expr1)
+      1 (when (eval expr)
           (list ctx))
-      2 (let [out (second clause)]
-          (if (symbol? out)
-            (list (assoc ctx out (eval expr1)))
-            (throw (UnsupportedOperationException.
-                    (str "clause "
-                         clause
-                         " has a non-scalar binding."))))))))
+      2 (bind-binding ctx (second clause) (eval expr)))))
 
 
 ;; assume ctx has % for the rule set

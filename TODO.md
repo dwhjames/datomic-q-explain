@@ -1,5 +1,5 @@
 
-- bindings for `:in` and expression clauses
+- bindings for `:in` clauses
   - tuple
   - collection
   - relation
