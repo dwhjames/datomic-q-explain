@@ -175,7 +175,7 @@
 
 (defn is-rule-invocation?
   "A clause is a rule invocation if the first element
-   is a symbolic name (not a query var or wildcard), or
+   is a symbolic name (not a query or db var, or wildcard), or
    if the second is a symblic name and the first is a
    database variable (symbol beginning with `$`)."
   [clause]
@@ -184,7 +184,7 @@
          (or (and (-> a name first (= \$))
                   (symbol? b)
                   (-> b name first #{\? \_} not))
-             (-> a name first #{\? \_} not)))))
+             (-> a name first #{\? \_ \$} not)))))
 
 
 (defn abstract-with-fresh-vars
@@ -214,23 +214,33 @@
    `:where` clause `clause`, returning a pair of the new
    context and the new clause.
 
-   Expression clauses are ignored, and rule invocations
+   The abstracted clause is prepended with the clause type,
+   either `:expr`, `:rule`, or `:data`.
+
+   Expression clauses are not abstracted, and rule invocations
    are handled specially to avoid abstracting the rule name."
   [ctx clause]
   (cond
    (is-expression-clause? clause)
-   [ctx clause]
+   [ctx (cons :expr clause)]
    (is-rule-invocation? clause)
    (if (-> clause first name first (= \$))
      (let [[db-var rule-name & args] clause
            [ctx1 abstract-args] (abstract-with-fresh-vars ctx args)]
        [ctx1
-        (cons db-var (cons rule-name abstract-args))])
+        (->> abstract-args
+             (cons rule-name)
+             (cons db-var)
+             (cons :rule))])
      (let [[rule-name & args] clause
            [ctx1 abstract-args] (abstract-with-fresh-vars ctx args)]
-       [ctx1 (cons rule-name abstract-args)]))
+       [ctx1
+        (->> abstract-args
+             (cons rule-name)
+             (cons :rule))]))
    :else
-   (abstract-with-fresh-vars ctx clause)))
+   (let [[ctx1 abstract-clause] (abstract-with-fresh-vars ctx clause)]
+     [ctx1 (cons :data abstract-clause)])))
 
 
 (defn abstract-clauses
@@ -431,13 +441,13 @@
 
    If the clause is a rule invocation, then the rule evaluation
    recurses."
-  [ctx cnt-map clause]
-  (cond
-   (is-expression-clause? clause)
+  [ctx cnt-map [clause-type & clause]]
+  (case clause-type
+   :expr
    (eval-expression-clause ctx clause)
-   (is-rule-invocation? clause)
+   :rule
    (eval-rule-invoc ctx cnt-map clause)
-   :else
+   :data
    (let [[db clause1]
          (lookup-db-for-clause ctx clause)
          [index components filter-fn]

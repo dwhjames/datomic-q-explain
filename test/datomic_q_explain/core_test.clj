@@ -98,33 +98,38 @@
   (testing "abstract nothing when all vars"
     (let [ctx {}
           clause '[?e ?a ?v]
-          [ctx1 clause1] (abstract-clause ctx clause)]
+          [ctx1 [lbl & clause1]] (abstract-clause ctx clause)]
       (is (= ctx ctx1))
+      (is (= :data lbl))
       (is (= clause clause1))))
 
   (testing "don't abstract db vars"
     (let [ctx {}
           clause '[$ ?e ?a]
-          [ctx1 clause1] (abstract-clause ctx clause)]
+          [ctx1 [lbl & clause1]] (abstract-clause ctx clause)]
       (is (= ctx ctx1))
+      (is (= :data lbl))
       (is (= clause clause1)))
     (let [ctx {}
           clause '[$db ?e ?a]
-          [ctx1 clause1] (abstract-clause ctx clause)]
+          [ctx1 [lbl & clause1]] (abstract-clause ctx clause)]
       (is (= ctx ctx1))
+      (is (= :data lbl))
       (is (= clause clause1))))
 
   (testing "skip wildcard"
     (let [ctx {}
           clause '[?e _ ?v]
-          [ctx1 clause1] (abstract-clause ctx clause)]
+          [ctx1 [lbl & clause1]] (abstract-clause ctx clause)]
       (is (= ctx ctx1))
+      (is (= :data lbl))
       (is (= clause clause1))))
 
   (testing "abstract attribute"
     (let [ctx {}
           clause '[?e :attr ?v]
-          [ctx1 clause1] (abstract-clause ctx clause)]
+          [ctx1 [lbl & clause1]] (abstract-clause ctx clause)]
+      (is (= :data lbl))
       (is (= 1
              (count ctx1)))
       (is (some #{:attr}
