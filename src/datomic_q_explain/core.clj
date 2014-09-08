@@ -209,6 +209,33 @@
       [ctx acc])))
 
 
+(defn extract-query-vars
+  "Return the set of query and db variables that
+   exists anywhere in the expression body."
+  [body]
+  (cond
+   (and (symbol? body)
+        (-> body name first #{\? \$}))
+   #{body}
+   (coll? body)
+   (apply clojure.set/union (map extract-query-vars body))))
+
+
+(defn expr-to-fn
+  "Precompile an expression body into a function that
+   evaluates the expression given an eval context."
+  [body]
+  (let [vars (->> body
+                  extract-query-vars
+                  (into []))
+        f (eval (list 'fn vars
+                      body))]
+    (fn [ctx]
+      (->> vars
+           (map #(get ctx %))
+           (apply f)))))
+
+
 (defn abstract-clause
   "Extend the evaluation context `ctx` by abstracting the
    `:where` clause `clause`, returning a pair of the new
@@ -222,7 +249,9 @@
   [ctx clause]
   (cond
    (is-expression-clause? clause)
-   [ctx (cons :expr clause)]
+   (let [[body binding] clause
+         expr-f (expr-to-fn body)]
+     [ctx [:expr expr-f binding]])
    (is-rule-invocation? clause)
    (if (-> clause first name first (= \$))
      (let [[db-var rule-name & args] clause
@@ -325,18 +354,18 @@
 
 
 (defn eval-expression-clause
-  "Evaluate an expression `clause` according to `ctx`.
+  "Evaluate an expression fn `expr-f` according to `ctx`.
 
-   If it is just a predicate clause, and evaluates to true,
-   then the same context is returned. Otherwise it is a
-   function clause and the context is returned with the
-   output variable bound to the result of the function."
-  [ctx clause]
-  (let [expr (map #(get ctx % %) (first clause))]
-    (case (count clause)
-      1 (when (eval expr)
-          (list ctx))
-      2 (bind-binding ctx (second clause) (eval expr)))))
+   If `binding` is nil then the original clause was just
+   a predicate clause, so if the result is logical true,
+   then a singleton list of the same context is returned.
+   Otherwise it was a function clause and the result is
+   bound to produce a non-empty list of new contexts."
+  [ctx expr-f binding]
+  (if binding
+    (->> ctx expr-f (bind-binding ctx binding))
+    (when (expr-f ctx)
+      (list ctx))))
 
 
 ;; assume ctx has % for the rule set
@@ -444,7 +473,7 @@
   [ctx cnt-map [clause-type & clause]]
   (case clause-type
    :expr
-   (eval-expression-clause ctx clause)
+   (apply eval-expression-clause ctx clause)
    :rule
    (eval-rule-invoc ctx cnt-map clause)
    :data
