@@ -1,4 +1,4 @@
-# datomic-q-explain [![Build Status](https://travis-ci.org/dwhjames/datomic-q-explain.svg?branch=master)](https://travis-ci.org/dwhjames/datomic-q-explain)
+# datomic-q-explain [![Build Status](https://travis-ci.org/pellucidanalytics/datomic-q-explain.svg?branch=master)](https://travis-ci.org/pellucidanalytics/datomic-q-explain)
 
 A Clojure library to explain the consumption of datoms during query
 evaluation. It provides a drop-in replacement for
@@ -20,7 +20,7 @@ outstanding [TODOs](TODO.md) for current limitations and future plans.
 
 ## License
 
-Copyright © 2014 Daniel W. H. James
+Copyright © 2014 Pellucid Analytics
 
 Distributed under the Eclipse Public License either version 1.0 or (at
 your option) any later version.
